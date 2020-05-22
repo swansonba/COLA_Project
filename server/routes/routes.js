@@ -133,20 +133,15 @@ module.exports = function (app) {
 
     app.get('/account', db.authenticationMiddleware(), function (req, res) {
         let context = {};
-        let awaitPromises = [];
         const userId = req.session.passport.user.userId;
         context.style = ['styles.css', 'font_size.css', 'account.css'];
         context.script = ['account.js', 'account_ajax.js', 'utility.js'];
         context.title = 'My Account';
         context.account = true; //used for navivation.hbs
 
-        awaitPromises.push(
-            db.getUserEmail(userId)
-                .then(res => context.email = res[0].email)
-                .catch(err => console.log(err))
-        );
-        Promise.all(awaitPromises)
-            .then(() => res.render('account', context))
+	misc.setLayout(req, context)
+	    .catch(() => console.log('error in setLayout'))
+	    .finally(() => res.render('account', context))
     });
 
     app.get('/subscriptions', db.authenticationMiddleware(), function (req, res) {
@@ -166,10 +161,10 @@ module.exports = function (app) {
                 }))
                 .catch(err => console.log(err))
             ,
-            db.getUserEmail(userId)
-                .then(res => context.email = res[0].email)
+	    misc.setLayout(req, context)
                 .catch(err => console.log(err))
         )
+	
         context.style = ['styles.css', 'font_size.css', 'subscriptions.css'];
         context.title = 'My Subscriptions';
         context.subscriptions = true; //used for navivation.hbs
@@ -177,8 +172,10 @@ module.exports = function (app) {
             'subscriptions_ajax.js',
             'utility.js'];
         context.deferScript = ['../pdfjs/pdf.js'];
+	
         Promise.all(awaitPromises)
-            .then(() => res.render('subscriptions', context))
+	    .catch(err => console.log(err))
+	    .finally(() => res.render('subscriptions', context))
     });
 
     app.get(`/logout`, function (req, res) {
@@ -228,6 +225,51 @@ module.exports = function (app) {
                 context.script = ['recover.js', 'recover_ajax.js', 'utility.js'];
                 res.render('recover', context);
             })
+    });
+    
+    app.get('/userinfo', db.authenticationMiddleware(), function (req, res) {
+
+        let context = {
+            style: ['styles.css', 'font_size.css', 'userInfo.css'],
+            script: ['userInfo.js', 'utility.js'],
+            title: 'User Info',
+            account: true, //used for navivation.hbs
+	    userInfo: []
+	};
+
+        const userId = req.session.passport.user.userId;
+
+	misc.setLayout(req, context)
+	    .then(() => {
+		if(!context.isAdmin) {
+		    throw new Error(`user id:${userId} trying to access /userinfo page`);
+		}
+		else {
+		    return db.getAllUsersSubscriptions(context.userInfo);
+		}
+	    })
+	    .then(() => {
+		context.newUsers = {
+		    past30: 30,
+		    past180: 180
+		};
+		return db.getNewUsers(context.newUsers);
+	    })
+	    .then (() => {
+		context.newSubscriptions = {
+		    past30: 30,
+		    past180: 180
+		};
+		return db.getNewSubscriptions(context.newSubscriptions);
+	    })
+	    .then(() => {
+		console.log(context.newUsers);
+		res.render('userInfo', context)
+	    })
+	    .catch(err => {
+		console.log(err);
+		return res.redirect('/')
+	    })
     });
 
 };

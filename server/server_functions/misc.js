@@ -424,6 +424,7 @@ module.exports = {
                 db.getUserEmail(req.session.passport.user.userId)
                     .then(res => {
                         context.email = res[0].email;
+			context.isAdmin = res[0].isAdmin;
                         resolve();
                     })
                     .catch(err => {
@@ -454,14 +455,24 @@ module.exports = {
     loginHelper: function (passport, req, res, next, context) {
         return new Promise((resolve, reject) => {
             passport.authenticate('local', function (err, user, info) {
-                console.log(user);
                 if (err) {
                     context.error = true;
                     return reject(err);
                 }
                 else if (!user) {
-                    context.invalid = true;
-                    return reject();
+		    console.log(info);
+		    console.log(user);
+		    if (!info.isVerified){
+			context.unverifiedEmail = req.body.username;
+			context.invalid = true;
+			context.isVerified = false;
+			return reject();
+		    }
+		    else {
+			context.invalid = true;
+			context.isVerified = true; 
+			return reject();
+		    }
                 }
 
                 req.logIn(user, function (err) {
@@ -476,6 +487,16 @@ module.exports = {
             })(req, res, next)
         })
 
+    },
+
+    /* name: toHumanDate
+       preconditions: date is an instance of datetime
+       postconditions: return date in string format "Day Month Year" 
+     */
+    toHumanDate: function(date) {
+	let month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date);
+
+	return date.getDate() + ' '+ month + ' ' + date.getFullYear();
     }
 }
 

@@ -6,6 +6,8 @@ const saltRounds = 10;
 var mysql = require('../dbcon.js');
 const DEFAULT_TEMPLATE_ID = process.env.DEFAULT_TEMPLATE_ID || 1;
 
+const DAY_TO_MS = 60 * 60 * 24 * 1000;
+
 /* name: queryDB
    preconditions: sql contains string sql query
                   values is array of arguments for sql statement
@@ -312,7 +314,7 @@ module.exports = {
         })
     },
     /* name: getColaRate
-       preconditions: country is string name of country which we need cola rate
+v       preconditions: country is string name of country which we need cola rate
        post is string name of post which we need cola rate
        postconditions: returns promise, which when resolved returns object with 
        id, country, post, and allowance as data members
@@ -380,10 +382,149 @@ module.exports = {
     },
 
     /*******************************************************************/
-    /******************* END  COLA RATE SCRIPT QUERIES *****************/
+    /******************* END COLA RATE SCRIPT QUERIES *****************/
     /*******************************************************************/
 
+    /*******************************************************************/
+    /********************* USER INFO PAGE QUERIES **********************/
+    /*******************************************************************/
+    /* name: getAllUsersSubscriptions
+       preconditions: None, per se. This method should only be used/
+                      called by logged in users with admin privileges,
+		      granted in user.isAdmin.
+       postconditions:  return list of every user in db. Subscription
+                          lists are selected for each user after rather
+			  rather than joining table for simplicity
+			  of constructing context object as follows:
 
+			  context = [
+			    {
+			      email: email,
+			      created: created,
+			      subscriptions: [
+			        {country: country, post: post}
+			        ]
+			      }
+			  ]
+			If db gets sufficiently large, this may need
+			to change.
+    */
+    getAllUsersSubscriptions: function (context) {
+        return new Promise((resolve, reject) => {
+            const sql = 'SELECT id, email, created, isAdmin, isVerified FROM user ORDER BY email ASC';
+	    const sql2 = 'SELECT u.email, u.isAdmin, u.isVerified, s.created, cr.country, cr.post'
+		  + ' FROM user u'
+		  + ' INNER JOIN subscription s ON u.id=s.userId'
+		  + ' INNER JOIN COLARates_subscription crs ON s.id=crs.subscriptionId'
+		  + ' INNER JOIN COLARates cr ON crs.COLARatesId=cr.id'
+		  + ' WHERE s.userId=? AND s.active=true ORDER BY cr.country ASC, cr.post ASC'
+	    
+            queryDB(sql, [], mysql)
+		.then(users => {
+		    let awaitPromises = [];
+		    users.forEach((user, ind) => {
+			context.push(user);
+			awaitPromises.push(
+			    queryDB(sql2, [user.id], mysql)
+				.then(sub => {
+				    context[ind].subscription = sub;
+				    context[ind].numberSubscriptions = sub.length;
+				})
+			);
+			
+		    })
+		    return Promise.all(awaitPromises);
+		})
+                .then(resolve)
+                .catch(reject)
+        });
+    },
+
+    /* name: getNewUsers
+       preconditions: pass in object days of how many days previous to
+                        today to retrieve new users. Days should look
+			something like this: days = {
+			  past30: 30,
+			  past180: 180,
+			  ...
+			}
+       postconditions: Days object is filled with number of new accounts
+                         created in passed in number of days.
+    */
+    getNewUsers: function (days) {
+	const today = new Date();
+	const sql = 'SELECT count(*) FROM user u WHERE u.created >= ? AND u.created <= ?';
+	
+	return new Promise((resolve, reject) => {
+	    let keys = Object.keys(days);
+	    
+	    let awaitPromises = [];
+	    keys.forEach(key => {
+		let prevDate = new Date(today - days[key] * DAY_TO_MS);
+
+		let values = [prevDate, today];
+		let query = queryDB(sql, values, mysql)
+		    .then(result => {
+			days[key] = result[0]['count(*)'];
+		    })
+		    .catch(reject)
+		
+		awaitPromises.push(query);
+	    })
+
+	    Promise.all(awaitPromises)
+		.then(resolve)
+		.catch(err => {
+		    console.log(err);
+		    reject();
+		})
+	})
+    },
+    
+    /* name: getNewSubscriptions
+       preconditions: pass in object days of how many days previous to
+                        today to retrieve new subscriptions. Days should look
+			something like this: days = {
+			  past30: 30,
+			  past180: 180,
+			  ...
+			}
+       postconditions: Days object is filled with number of new accounts
+                         created in passed in number of days.
+    */
+    getNewSubscriptions: function (days) {
+	const today = new Date();
+	const sql = 'SELECT count(*) FROM subscription s WHERE s.created >= ? AND s.created <= ? AND s.active=true';
+	
+	return new Promise((resolve, reject) => {
+	    let keys = Object.keys(days);
+	    
+	    let awaitPromises = [];
+	    keys.forEach(key => {
+		let prevDate = new Date(today - days[key] * DAY_TO_MS);
+
+		let values = [prevDate, today];
+		let query = queryDB(sql, values, mysql)
+		    .then(result => {
+			days[key] = result[0]['count(*)'];
+		    })
+		    .catch(reject)
+		
+		awaitPromises.push(query);
+	    })
+
+	    Promise.all(awaitPromises)
+		.then(resolve)
+		.catch(err => {
+		    console.log(err);
+		    reject();
+		})
+	})
+    },
+    /*******************************************************************/
+    /******************* END USER INFO PAGE QUERIES ********************/
+    /*******************************************************************/
+    
     /*******************************************************************/
     /********************* SUBSCRIPTION PAGE QUERIES *******************/
     /*******************************************************************/
@@ -479,7 +620,7 @@ module.exports = {
     */
     getUserEmail: function (userId) {
         return new Promise((resolve, reject) => {
-            const sql = `SELECT email FROM user WHERE id=?`;
+            const sql = `SELECT email, isAdmin FROM user WHERE id=?`;
             const values = [userId];
             queryDB(sql, values, mysql)
                 .then(res => resolve(res))
@@ -729,6 +870,7 @@ module.exports = {
 }
 
 passport.serializeUser(function (userId, done) {
+    console.log('serializing');
     done(null, userId);
 });
 
@@ -743,29 +885,34 @@ passport.use(new LocalStrategy(function (username, password, done) {
     values = [username];
 
     queryDB(sql, values, mysql)
-        .then(message => {
-            if (message.length == 0) {
+        .then(dbRes => {
+            if (dbRes.length == 0) {
                 console.log("wrong keyword entry");
-                return done(null, false)
+                return done(null, false, {
+		    invalidUsername: true,
+		    isVerified: true
+		})
             }
-            else if (!message[0].isVerified) {
+            else if (!dbRes[0].isVerified) {
                 console.log(`${username} needs to be verified`);
-                return done(null, false);
+                return done(null, false, {isVerified: false});
             }
 
-            const hash = message[0].password.toString();
+            const hash = dbRes[0].password.toString();
             bcrypt.compare(password, hash, function (err, response) {
                 if (response == true) {
-                    return done(null, { userId: message[0].id });
+                    return done(null, {userId: dbRes[0].id});
                 }
                 else {
-                    return done(null, false);
+                    return done(null, false, {
+			invalidPassword: true,
+			isVerified: true
+		    });
                 }
             });
         })
         .catch(err => {
             console.log(err);
+	    return done(null, false);
         })
-
-
 }));
